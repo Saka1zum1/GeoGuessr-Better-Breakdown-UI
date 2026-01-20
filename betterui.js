@@ -40,10 +40,7 @@ let svs = null;
 let viewer = null;
 let guessMap = null;
 let peekMarker = null;
-let mapObserver = null;
-let gameLoopTimer = null;
 let coverageLayer = null;
-let markerObserver = null;
 let currentGameToken = null;
 let lastClickedCoords = null;
 let realTimePreviewTooltip = null;
@@ -67,6 +64,71 @@ const full_months=['January', 'February', 'March', 'April', 'May', 'June','July'
 /* =======================
    Utility Functions
 ======================= */
+
+/**
+ * Factory function to create an observer manager
+ * Consolidates startMarkerObserver/stopMarkerObserver and starMapObserver/stopMapObserver patterns
+ */
+function createObserverManager() {
+    let observer = null;
+    let timer = null;
+    
+    return {
+        start(callback, options = { childList: true, subtree: true }) {
+            this.stop();
+            observer = new MutationObserver(callback);
+            observer.observe(document.body, options);
+        },
+        stop() {
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        },
+        setTimer(t) { timer = t; },
+        getTimer() { return timer; }
+    };
+}
+
+/**
+ * Safe data extraction helper
+ * Replaces repeated try-catch blocks throughout the code
+ */
+function safeGet(obj, pathArray, defaultValue = null) {
+    try {
+        return pathArray.reduce((o, k) => o[k], obj) ?? defaultValue;
+    } catch {
+        return defaultValue;
+    }
+}
+
+/**
+ * Parse address from data structure
+ * Extracts repeated address parsing logic
+ */
+function parseAddress(data) {
+    const paths = [
+        [1, 0, 3, 2, 1, 0],
+        [1, 0, 3, 2, 0, 0]
+    ];
+    
+    for (const path of paths) {
+        const address = safeGet(data, path);
+        if (address) {
+            const parts = address.split(',');
+            return {
+                region: parts.length > 1 ? parts[parts.length - 1].trim() : address,
+                locality: parts.length > 1 ? parts[0].trim() : null
+            };
+        }
+    }
+    return { region: null, locality: null };
+}
+
 function getReactFiber(el) {
     if (!el) return null;
     const key = Object.keys(el).find(k => k.startsWith("__reactFiber"));
@@ -194,11 +256,12 @@ function attachClickListener(map) {
 
 
 function scheduleGameLoop(delay=200) {
-    if (gameLoopTimer) {
-        clearTimeout(gameLoopTimer);
+    const timer = markerObserverManager.getTimer();
+    if (timer) {
+        clearTimeout(timer);
     }
 
-    gameLoopTimer = setTimeout(async () => {
+    const newTimer = setTimeout(async () => {
         if (gameLoopRunning) return;
 
         gameLoopRunning = true;
@@ -210,41 +273,23 @@ function scheduleGameLoop(delay=200) {
             gameLoopRunning = false;
         }
     }, delay);
+    markerObserverManager.setTimer(newTimer);
 }
 
 
 function startMarkerObserver() {
-    stopMarkerObserver();
-
-    markerObserver = new MutationObserver(() => {
+    markerObserverManager.start(() => {
         scheduleGameLoop(150);
-    });
-
-    markerObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
     });
 }
 
 function stopMarkerObserver() {
-    if (markerObserver) {
-        markerObserver.disconnect();
-        markerObserver = null;
-    }
-
-    if (gameLoopTimer) {
-        clearTimeout(gameLoopTimer);
-        gameLoopTimer = null;
-    }
+    markerObserverManager.stop();
 }
 
 
 function starMapObserver() {
-    stopMapObserver();
-
-    const targetNode = document.body;
-
-    mapObserver = new MutationObserver((mutations) => {
+    mapObserverManager.start((mutations) => {
         if (!mutations.some(m => m.addedNodes.length > 0)) return;
 
         const mapEl = document.querySelector(SELECTORS.guessMap) || document.querySelector(SELECTORS.resultMap);
@@ -257,19 +302,10 @@ function starMapObserver() {
             stopMapObserver();
         }
     });
-
-    mapObserver.observe(targetNode, {
-        childList: true,
-        subtree: true,
-        attributes: false,
-    });
 }
 
 function stopMapObserver() {
-    if (mapObserver) {
-        mapObserver.disconnect();
-        mapObserver = null;
-    }
+    mapObserverManager.stop();
     clickListenerAttached = false;
 }
 
@@ -454,39 +490,61 @@ function updateRealtimePreview(marker, pano) {
 
 }
 
-function applyPanoToGuessMarker(marker, pano, roundId) {
-    const bindKey = `bound_${roundId}`;
+/**
+ * Unified function to apply panorama tooltip to markers
+ * Merges applyPanoToGuessMarker and applyPanoToAnswerMarker to eliminate duplication
+ * @param {HTMLElement} marker - The marker element
+ * @param {Object} pano - The panorama data
+ * @param {number} roundId - The round identifier
+ * @param {string} type - 'guess' or 'answer'
+ */
+function applyPanoToMarker(marker, pano, roundId, type = 'guess') {
+    const bindKey = type === 'guess' ? `bound_${roundId}` : `answer_${roundId}`;
     if (marker.dataset?.peekBound === bindKey) return;
     marker.dataset.peekBound = bindKey;
 
     marker.style.cursor = "pointer";
     marker.style.pointerEvents = "auto";
-    marker.dataset.pano = pano.error ? "false" : "true";
-
-    marker.querySelectorAll(".peek-tooltip").forEach(t => t.remove());
+    
+    const tooltipClass = type === 'guess' ? 'peek-tooltip' : 'peek-answer-tooltip';
+    marker.querySelectorAll(`.${tooltipClass}`).forEach(t => t.remove());
 
     const tooltip = document.createElement("div");
-    tooltip.className = "peek-tooltip";
-    if (pano.error) {
-        tooltip.innerHTML = `<div class="peek-error">No Street View found within 250km</div>`;
+    tooltip.className = tooltipClass;
+    
+    // Build different tooltip content based on type
+    if (type === 'guess') {
+        marker.dataset.pano = pano.error ? "false" : "true";
+        if (pano.error) {
+            tooltip.innerHTML = `<div class="peek-error">No Street View found within 250km</div>`;
+        } else {
+            tooltip.innerHTML = `
+                <div class="peek-header">
+                    <span class="peek-dist">${formatDistance(pano.radius)}</span> away
+                </div>
+                <div class="peek-body">
+                    <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb" alt="Preview">
+                </div>
+                <div class="peek-note">Click pin to view Street View</div>
+            `;
+        }
     } else {
         tooltip.innerHTML = `
-            <div class="peek-header">
-                <span class="peek-dist">${formatDistance(pano.radius)}</span> away
-            </div>
-            <div class="peek-body">
-                <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb" alt="Preview">
-            </div>
             <div class="peek-note">Click pin to view Street View</div>
+            <div class="peek-body">
+                <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb">
+            </div>
         `;
+    }
 
+    // Shared click handling logic
+    if (!pano.error || type === 'answer') {
         const clickHandler = (e) => {
             e.preventDefault();
             e.stopPropagation();
             removePeekMarker();
             openNativeStreetView(pano);
         };
-
         marker.removeEventListener("click", marker._peekHandler);
         marker._peekHandler = clickHandler;
         marker.addEventListener("click", clickHandler);
@@ -495,34 +553,13 @@ function applyPanoToGuessMarker(marker, pano, roundId) {
     marker.appendChild(tooltip);
 }
 
+// Legacy function names for compatibility
+function applyPanoToGuessMarker(marker, pano, roundId) {
+    applyPanoToMarker(marker, pano, roundId, 'guess');
+}
+
 async function applyPanoToAnswerMarker(marker, pano, roundId) {
-    const bindKey = `answer_${roundId}`;
-    if (marker.dataset?.peekBound === bindKey) return;
-    marker.dataset.peekBound = bindKey;
-
-    marker.style.cursor = "pointer";
-    marker.style.pointerEvents = "auto";
-    marker.querySelectorAll(".peek-answer-tooltip").forEach(t => t.remove());
-
-    const tooltip = document.createElement("div");
-    tooltip.className = "peek-answer-tooltip";
-    tooltip.innerHTML = `
-            <div class="peek-note">Click pin to view Street View</div>
-            <div class="peek-body">
-                <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb">
-            </div>
-        `;
-    marker.appendChild(tooltip);
-    const clickHandler = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        removePeekMarker();
-        openNativeStreetView(pano);
-    };
-
-    marker.removeEventListener("click", marker._peekHandler);
-    marker._peekHandler = clickHandler;
-    marker.addEventListener("click", clickHandler);
+    applyPanoToMarker(marker, pano, roundId, 'answer');
 }
 function getGeneration(worldsize, country, lat, date) {
     if (!worldsize) return 'Ari';
@@ -554,68 +591,32 @@ function getGeneration(worldsize, country, lat, date) {
 function parseMeta(data) {
     const tags=[]
 
-    const panoId=data[1][0][1][1];
-    const lat = data[1][0][5][0][1][0][2];
-    const lng = data[1][0][5][0][1][0][3];
-    const year = data[1][0][6][7][0];
-    const month = data[1][0][6][7][1];
-    const worldsize = data[1][0][2][2][0];
-    const history =data[1][0][5][0][8];
-    const links= data[1][0][5][0][3][0]
-
+    // Use safeGet for safe data extraction
+    const panoId = safeGet(data, [1, 0, 1, 1]);
+    const lat = safeGet(data, [1, 0, 5, 0, 1, 0, 2]);
+    const lng = safeGet(data, [1, 0, 5, 0, 1, 0, 3]);
+    const year = safeGet(data, [1, 0, 6, 7, 0]);
+    const month = safeGet(data, [1, 0, 6, 7, 1]);
+    const worldsize = safeGet(data, [1, 0, 2, 2, 0]);
+    const history = safeGet(data, [1, 0, 5, 0, 8]);
+    const links = safeGet(data, [1, 0, 5, 0, 3, 0]);
 
     const date = new Date(year, month - 1);
     const formattedDate = date.toLocaleString('default', { month: 'short', year: 'numeric' });
 
-    let heading, region, locality, road, country, altitude;
-    try{
-        heading=data[1][0][5][0][1][2][0];
-    }catch(e){
-        heading=0
-    }
-    try {
-        country = data[1][0][5][0][1][4];
-        if (['TW', 'HK', 'MO'].includes(country)) {
-            country = 'CN';
-        }
-    } catch (e) {
-        country = null;
+    // Use safeGet for optional fields
+    const heading = safeGet(data, [1, 0, 5, 0, 1, 2, 0], 0);
+    let country = safeGet(data, [1, 0, 5, 0, 1, 4], null);
+    if (country && ['TW', 'HK', 'MO'].includes(country)) {
+        country = 'CN';
     }
 
-    try {
-        const address = data[1][0][3][2][1][0];
-        const parts = address.split(',')
-        if(parts.length > 1){
-            region = parts[parts.length-1].trim();
-            locality=parts[0].trim()
-        } else {
-            region = address;
-        }
-    } catch (e) {
-        try{
-            const address=data[1][0][3][2][0][0]
-            const parts = address.split(',')
-            if(parts.length > 1){
-                region = parts[parts.length-1].trim();
-                locality=parts[0].trim()
-            }
-            else region = address;
-        }
-        catch(e){
-            region=null;
-        }
-    }
-    try {
-        road = data[1][0][5][0][12][0][0][0][2][0];
-    } catch (e) {
-        road = null;
-    }
-    try{
-        altitude=data[1][0][5][0][1][1][0]
-    }
-    catch(e){
-        altitude=null;
-    }
+    // Use parseAddress helper for address extraction
+    const { region, locality } = parseAddress(data);
+
+    const road = safeGet(data, [1, 0, 5, 0, 12, 0, 0, 0, 2, 0], null);
+    const altitude = safeGet(data, [1, 0, 5, 0, 1, 1, 0], null);
+
     const generation = String(data[1][0][4]).includes('Google')?getGeneration(worldsize, country, lat, date):'ari';
     let camera;
     if (generation=='Gen4'){
