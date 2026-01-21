@@ -9,6 +9,10 @@
 - **🗺️ Built-in Street View Viewer**: Click markers to open Street View directly in-page without leaving the site
 - **⏰ Historical Street View**: Switch between different Street View images captured at different times
 - **🎯 Coverage Layer**: Display Google Street View coverage to help you better analyze the map
+- **🛤️ Movement Path Tracking**: Visualize your exploration path in Street View - a simple blue line is drawn on the map as you move around, and automatically clears when you click the map
+- **📷 Photo Mode**: Enter fullscreen photo mode to capture clean Street View screenshots without UI elements
+- **⚔️ Duel Mode Support**: Full support for Duel mode with dedicated rounds panel - click the panel button on the map to view round details and switch between rounds
+- **📐 Resizable Map**: In Duel mode, resize the map container in 8 directions - your preferred size is saved automatically
 - **💾 Map Making Integration**: Save locations to [Map Making App](https://map-making.app) with one click
 
 ## 🎹 Keyboard Shortcuts
@@ -45,8 +49,12 @@ If you want to save Street View locations to Map Making App:
 
 - **View guess details**: After a round ends, hover over your guess marker to preview the Street View
 - **Analyze correct location**: Click on the correct location marker (green) to view the actual Street View
+- **Track your exploration**: As you move around in Street View, a red path line will automatically appear on the map showing where you've been
 - **Switch historical views**: Use the dropdown menu at the bottom of the viewer to select different capture dates
 - **Copy Street View link**: Click the copy button in the bottom-left corner of the viewer to get a Google Maps short link
+- **Photo mode**: Click the camera icon to enter fullscreen photo mode for clean screenshots - press ESC to exit
+- **Duel mode rounds**: In Duel breakdown, click the list icon on the map to open the rounds panel and quickly switch between rounds
+- **Resize map**: In Duel mode, drag the edges or corners of the map container to resize it to your preference
 
 ## 📝 License
 
@@ -54,4 +62,10 @@ MIT License - See [LICENSE](LICENSE) file for details
 
 ## 👨‍💻 Author
 
-KaKa, Alien Perfect
+[KaKa](https://github.com/Saka1zum1)
+
+## 🙏 Attribution
+
+Some parts of this project are adapted from:
+- [Alien Perfect's Guess Peek](https://greasyfork.org/scripts/483541-guess-peek-geoguessr)
+- [miraclewhips' Save to Mapmaking App](https://github.com/miraclewhips/geoguessr-userscripts/raw/refs/heads/master/geoguessr-save-to-mapmaking.user.js)
