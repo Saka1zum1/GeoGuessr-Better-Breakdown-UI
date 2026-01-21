@@ -573,7 +573,6 @@ function addDuelRoundsPanel() {
     });
 
     const clonedRoundElements = roundsContainer.querySelectorAll('[class*="game-summary_playedRound"]');
-    // 获取原始回合元素（排除面板内的克隆元素）
     const originalRoundElements = document.querySelectorAll('[class*="game-summary_playedRounds"]:not(.peek-duel-rounds-list) [class*="game-summary_playedRound"]');
 
     clonedRoundElements.forEach((roundElement, index) => {
@@ -581,18 +580,31 @@ function addDuelRoundsPanel() {
             e.preventDefault();
             e.stopPropagation();
 
-            // 移除所有克隆元素的选中状态
+            const getSelectedClass = (element) => {
+                return Array.from(element.classList).find(cls => cls.includes('game-summary_selectedRound'));
+            };
+
             clonedRoundElements.forEach(el => {
-                el.classList.remove('game-summary_selectedRound__pSEko');
+                const selectedClass = getSelectedClass(el);
+                if (selectedClass) el.classList.remove(selectedClass);
             });
 
-            // 添加当前克隆元素的选中状态
-            roundElement.classList.add('game-summary_selectedRound__pSEko');
+            originalRoundElements.forEach(el => {
+                const selectedClass = getSelectedClass(el);
+                if (selectedClass) el.classList.remove(selectedClass);
+            });
 
-            // 触发对应原始元素的点击事件
-            const originalElement = originalRoundElements[index];
+            const originalElement = originalRoundElements[index-2];
             if (originalElement && typeof originalElement.click === 'function') {
                 originalElement.click();
+                
+                setTimeout(() => {
+                    const selectedClass = getSelectedClass(originalElement);
+                    if (selectedClass) {
+                        originalElement.classList.remove(selectedClass);
+                        roundElement.classList.add(selectedClass);
+                    }
+                }, 0);
             }
         });
     });
@@ -1262,6 +1274,8 @@ function openNativeStreetView(pano) {
     const mapContainer = document.querySelector(SELECTORS.resultMap)|| document.querySelector(SELECTORS.duelMap);
     const isDuelMode = !!document.querySelector(SELECTORS.duelMap);
     const actualContainer = isDuelMode ? mapContainer.parentElement : mapContainer;
+
+    offsetMapFocus(guessMap, pano.location);
 
     let coverageLayerControl = document.getElementById('layer-toggle');
     if (!coverageLayerControl) {
