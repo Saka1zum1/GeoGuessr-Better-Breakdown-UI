@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geoguessr Better Breakdown UI
 // @namespace    https://greasyfork.org/users/1179204
-// @version      1.0.7
+// @version      1.1.2
 // @description  built-in StreetView Window to view where you guessed and the correct location
 // @author       KaKa, Alien Perfect
 // @match        https://www.geoguessr.com/*
@@ -2632,5 +2632,6 @@ function main() {
 }
 `)
 }
+
 
 main();
