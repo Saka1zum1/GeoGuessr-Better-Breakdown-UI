@@ -87,7 +87,7 @@ function getReactFiber(el) {
 function getGuessMapInstance(el) {
     const fiber = getReactFiber(el);
     try {
-        return fiber?.return?.memoizedState?.memoizedState?.current?.instance || fiber?.return?.updateQueue?.lastEffect?.deps?.[0];
+        return fiber?.return?.memoizedState?.memoizedState?.current?.instance || fiber?.return?.updateQueue?.lastEffect?.deps?.[0]||null;
     } catch { return null; }
 }
 
@@ -306,8 +306,12 @@ function toggleCoverageLayer(action) {
 
 function addCreditToPage() {
     const isDuelEnd = document.querySelector(SELECTORS.duelMap)
-    const container = document.querySelector(`div[data-qa="result-view-top"]`)||isDuelEnd;
-    if (!container || document.getElementById('peek-credit-container')||!isDuelEnd) return;
+    let container = document.querySelector(`div[data-qa="result-view-top"]`);
+    if (!container && isDuelEnd) {
+        container = isDuelEnd.parentElement;
+    }
+    
+    if (!container || document.getElementById('peek-credit-container')) return;
     const element = document.createElement('div');
     element.id = 'peek-credit-container';
     element.className = 'peek-credit';
