@@ -25,7 +25,54 @@ const STORAGE_CAP = 50;
 const committedRounds = new Set();
 const PEEK_STATE = defaultState();
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const MONTHS_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// WeakMap for storing marker data to avoid DOM dataset operations
+const markerDataMap = new WeakMap();
+const markerHandlerMap = new WeakMap();
+
+// DOM element cache to reduce repeated queries
+const domCache = {
+    _nextRoot: null,
+    _lastNextRootCheck: 0,
+    get nextRoot() {
+        const now = Date.now();
+        if (!this._nextRoot || now - this._lastNextRootCheck > 1000) {
+            this._nextRoot = document.querySelector('#__next');
+            this._lastNextRootCheck = now;
+        }
+        return this._nextRoot;
+    },
+    clear() {
+        this._nextRoot = null;
+        this._lastNextRootCheck = 0;
+    }
+};
+
+// Throttle utility function
+function throttle(fn, delay) {
+    let lastCall = 0;
+    let timeoutId = null;
+    return function(...args) {
+        const now = Date.now();
+        const remaining = delay - (now - lastCall);
+        if (remaining <= 0) {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            lastCall = now;
+            fn.apply(this, args);
+        } else if (!timeoutId) {
+            timeoutId = setTimeout(() => {
+                lastCall = Date.now();
+                timeoutId = null;
+                fn.apply(this, args);
+            }, remaining);
+        }
+    };
+}
+
 const SELECTORS = {
     markerList: "[class*='map-pin_']:not([data-qa='correct-location-marker'])",
     roundMarker: "[data-qa='correct-location-marker']",
@@ -230,11 +277,20 @@ function scheduleGameLoop(delay = 200) {
 }
 
 
+// Throttled game loop scheduler to reduce callback frequency
+const throttledScheduleGameLoop = throttle(() => scheduleGameLoop(150), 100);
+
 function startMarkerObserver() {
     stopMarkerObserver();
 
-    markerObserver = new MutationObserver(() => {
-        scheduleGameLoop(150);
+    markerObserver = new MutationObserver((mutations) => {
+        // More precise filtering: only trigger on relevant mutations
+        const hasRelevantChange = mutations.some(m => 
+            m.addedNodes.length > 0 || m.removedNodes.length > 0
+        );
+        if (hasRelevantChange) {
+            throttledScheduleGameLoop();
+        }
     });
 
     markerObserver.observe(document.body, {
@@ -325,13 +381,16 @@ function addCreditToPage() {
 }
 
 async function gameLoop() {
-    if (!document.querySelector('#__next')) return
+    if (!domCache.nextRoot) return;
     const token = getGameToken(location.pathname);
     const round = getCurrentRound();
-    const isRoundEnd = !!document.querySelector(SELECTORS.roundEnd);
-    const isGameEnd = !!document.querySelector(SELECTORS.gameEnd);
-    let isDuelEnd = !!document.querySelector(SELECTORS.duelEnd);
-    const isRoundMarker = document.querySelector(SELECTORS.roundMarker)
+    const roundEndEl = document.querySelector(SELECTORS.roundEnd);
+    const gameEndEl = document.querySelector(SELECTORS.gameEnd);
+    const duelEndEl = document.querySelector(SELECTORS.duelEnd);
+    const isRoundEnd = !!roundEndEl;
+    const isGameEnd = !!gameEndEl;
+    const isDuelEnd = !!duelEndEl;
+    const isRoundMarker = document.querySelector(SELECTORS.roundMarker);
 
     if ((!token || !round) && !isDuelEnd) return;
     if (!isRoundEnd && !isGameEnd && !isDuelEnd && isCoverageLayer) {
@@ -382,19 +441,21 @@ function updateMarkersUI(token, currentRound, isFinal) {
     const answerMarkers = document.querySelectorAll(SELECTORS.roundMarker);
     if (markers.length === 0) return;
     if (isFinal) {
-        markers.forEach((marker, index) => {
-            const rNum = index + 1;
+        let rNum = 1;
+        for (const marker of markers) {
             if (data.guess?.[rNum]) {
                 applyPanoToGuessMarker(marker, data.guess[rNum], rNum);
             }
-        });
+            rNum++;
+        }
         if (answerMarkers && data.answer) {
-            answerMarkers.forEach((marker, index) => {
-                const rNum = index + 1;
-                if (data.answer?.[rNum]) {
-                    applyPanoToAnswerMarker(marker, data.answer[rNum], rNum);
+            let answerNum = 1;
+            for (const marker of answerMarkers) {
+                if (data.answer?.[answerNum]) {
+                    applyPanoToAnswerMarker(marker, data.answer[answerNum], answerNum);
                 }
-            });
+                answerNum++;
+            }
         }
     } else {
         const pano = data.guess?.[currentRound];
@@ -499,14 +560,20 @@ function updateRealtimePreview(marker, pano) {
 
 function applyPanoToGuessMarker(marker, pano, roundId) {
     const bindKey = `bound_${roundId}`;
-    if (marker.dataset?.peekBound === bindKey) return;
-    marker.dataset.peekBound = bindKey;
+    const markerData = markerDataMap.get(marker) || {};
+    if (markerData.peekBound === bindKey) return;
+    
+    markerData.peekBound = bindKey;
+    markerData.pano = pano.error ? "false" : "true";
+    markerDataMap.set(marker, markerData);
 
     marker.style.cursor = "pointer";
     marker.style.pointerEvents = "auto";
-    marker.dataset.pano = pano.error ? "false" : "true";
+    marker.dataset.pano = markerData.pano; // Keep for CSS selectors
 
-    marker.querySelectorAll(".peek-tooltip").forEach(t => t.remove());
+    // Remove existing tooltips
+    const existingTooltips = marker.querySelectorAll(".peek-tooltip");
+    for (const t of existingTooltips) t.remove();
 
     const tooltip = document.createElement("div");
     tooltip.className = "peek-tooltip";
@@ -530,25 +597,32 @@ function applyPanoToGuessMarker(marker, pano, roundId) {
             openNativeStreetView(pano);
         };
 
-        marker.removeEventListener("click", marker._peekHandler);
-        marker._peekHandler = clickHandler;
+        // Use WeakMap for event handler cleanup
+        const oldHandler = markerHandlerMap.get(marker);
+        if (oldHandler) {
+            marker.removeEventListener("click", oldHandler);
+        }
+        markerHandlerMap.set(marker, clickHandler);
         marker.addEventListener("click", clickHandler);
     }
 
     marker.appendChild(tooltip);
 }
 
+// WeakMap to track initialized containers
+const initializedContainers = new WeakMap();
+
 function addDuelRoundsPanel() {
     const mapContainer = document.querySelector('[class*="game-summary_mapContainer"]');
-    if (!mapContainer || mapContainer.dataset.duelPanel) return;
+    if (!mapContainer || initializedContainers.get(mapContainer)?.duelPanel) return;
 
-    mapContainer.dataset.duelPanel = 'true';
+    initializedContainers.set(mapContainer, { ...initializedContainers.get(mapContainer), duelPanel: true });
     mapContainer.style.position = 'relative';
     mapContainer.style.overflow = 'hidden';
 
     const playedRounds = document.querySelectorAll('[class*="game-summary_playedRounds"]');
 
-    if ( !playedRounds.length) {
+    if (!playedRounds.length) {
         console.error('Duel rounds elements not found', {playedRounds});
         return;
     }
@@ -567,32 +641,34 @@ function addDuelRoundsPanel() {
     const roundsContainer = document.createElement('div');
     roundsContainer.className = 'peek-duel-rounds-list';
 
-    playedRounds.forEach((round, index) => {
+    for (const round of playedRounds) {
         const clonedRound = round.cloneNode(true);
         roundsContainer.appendChild(clonedRound);
-    });
+    }
 
     const clonedRoundElements = roundsContainer.querySelectorAll('[class*="game-summary_playedRound"]');
     const originalRoundElements = document.querySelectorAll('[class*="game-summary_playedRounds"]:not(.peek-duel-rounds-list) [class*="game-summary_playedRound"]');
+
+    // Helper function defined once outside the loop
+    const getSelectedClass = (element) => {
+        return Array.from(element.classList).find(cls => cls.includes('game-summary_selectedRound'));
+    };
 
     clonedRoundElements.forEach((roundElement, index) => {
         roundElement.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
 
-            const getSelectedClass = (element) => {
-                return Array.from(element.classList).find(cls => cls.includes('game-summary_selectedRound'));
-            };
-
-            clonedRoundElements.forEach(el => {
+            for (const el of clonedRoundElements) {
                 const selectedClass = getSelectedClass(el);
                 if (selectedClass) el.classList.remove(selectedClass);
-            });
+            }
 
-            originalRoundElements.forEach(el => {
+
+            for (const el of originalRoundElements) {
                 const selectedClass = getSelectedClass(el);
                 if (selectedClass) el.classList.remove(selectedClass);
-            });
+            }
 
             const originalElement = originalRoundElements[index-2];
             if (originalElement && typeof originalElement.click === 'function') {
@@ -624,13 +700,8 @@ function addDuelRoundsPanel() {
     const togglePanel = () => {
         const isActive = panel.classList.toggle('active');
         toggleButton.classList.toggle('active');
-        if (isActive) {
-            toggleButton.style.opacity = '0';
-            toggleButton.style.pointerEvents = 'none';
-        } else {
-            toggleButton.style.opacity = '1';
-            toggleButton.style.pointerEvents = 'auto';
-        }
+        toggleButton.style.opacity = isActive ? '0' : '1';
+        toggleButton.style.pointerEvents = isActive ? 'none' : 'auto';
     };
 
     toggleButton.addEventListener('click', togglePanel);
@@ -645,15 +716,19 @@ function addDuelRoundsPanel() {
 
 function makeMapResizable() {
     const mapContainer = document.querySelector('[class*="game-summary_mapContainer"]');
-    if (!mapContainer || mapContainer.dataset.resizable) return;
-
-    mapContainer.dataset.resizable = 'true';
+    if (!mapContainer) return;
+    
+    const containerData = initializedContainers.get(mapContainer) || {};
+    if (containerData.resizable) return;
+    
+    containerData.resizable = true;
+    initializedContainers.set(mapContainer, containerData);
     mapContainer.style.position = 'relative';
 
     const savedSize = GM_getValue('mapContainerSize', { width: null, height: null });
     if (savedSize.width && savedSize.height) {
-        mapContainer.style.width = savedSize.width + 'px';
-        mapContainer.style.height = savedSize.height + 'px';
+        mapContainer.style.width = `${savedSize.width}px`;
+        mapContainer.style.height = `${savedSize.height}px`;
     }
 
     const resizerStyle = {
@@ -680,7 +755,7 @@ function makeMapResizable() {
     let startWidth = 0, startHeight = 0;
     let startLeft = 0, startTop = 0;
 
-    resizers.forEach(config => {
+    for (const config of resizers) {
         const resizer = document.createElement('div');
         resizer.className = `map-resizer-${config.name}`;
         resizer.style.cssText = `${config.style} position: absolute; cursor: ${config.cursor}; z-index: ${resizerStyle.zIndex}; background: ${resizerStyle.background};`;
@@ -712,7 +787,7 @@ function makeMapResizable() {
         });
 
         mapContainer.appendChild(resizer);
-    });
+    }
 
     document.addEventListener('mousemove', (e) => {
         if (!isResizing) return;
@@ -743,8 +818,8 @@ function makeMapResizable() {
         newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
         newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
 
-        mapContainer.style.width = newWidth + 'px';
-        mapContainer.style.height = newHeight + 'px';
+        mapContainer.style.width = `${newWidth}px`;
+        mapContainer.style.height = `${newHeight}px`;
     });
 
     document.addEventListener('mouseup', () => {
@@ -759,9 +834,10 @@ function makeMapResizable() {
                 height: mapContainer.offsetHeight
             });
 
-            mapContainer.querySelectorAll('[class^="map-resizer-"]').forEach(r => {
+            const resizerElements = mapContainer.querySelectorAll('[class^="map-resizer-"]');
+            for (const r of resizerElements) {
                 r.style.background = resizerStyle.background;
-            });
+            }
         }
     });
 }
@@ -776,16 +852,16 @@ async function applyPanoToDuelMarker(marker, data){
             heading:data.panorama.heading,
             pitch:data.panorama.pitch,
             zoom:data.panorama.zoom
-        }
+        };
     }
     else{
-        pano= await getNearestPano({lat:data.lat,lng:data.lng})
+        pano = await getNearestPano({lat:data.lat,lng:data.lng});
     }
     marker.style.cursor = "pointer";
     marker.style.pointerEvents = "auto";
     if (!data.panorama) marker.dataset.pano = pano.error ? "false" : "true";
 
-    if(marker.querySelector(".peek-duel-tooltip")||marker.querySelector(".peek-duel-answer-tooltip"))return
+    if(marker.querySelector(".peek-duel-tooltip")||marker.querySelector(".peek-duel-answer-tooltip"))return;
 
     const tooltip = document.createElement("div");
     tooltip.className = "peek-duel-tooltip";
@@ -819,21 +895,31 @@ async function applyPanoToDuelMarker(marker, data){
         openNativeStreetView(pano);
     };
 
-    marker.removeEventListener("click", marker._peekHandler);
-    marker._peekHandler = clickHandler;
+    // Use WeakMap for event handler cleanup
+    const oldHandler = markerHandlerMap.get(marker);
+    if (oldHandler) {
+        marker.removeEventListener("click", oldHandler);
+    }
+    markerHandlerMap.set(marker, clickHandler);
     marker.addEventListener("click", clickHandler);
 
     marker.appendChild(tooltip);
 }
 
-async function applyPanoToAnswerMarker(marker, pano, roundId) {
+function applyPanoToAnswerMarker(marker, pano, roundId) {
     const bindKey = `answer_${roundId}`;
-    if (marker.dataset?.peekBound === bindKey) return;
-    marker.dataset.peekBound = bindKey;
+    const markerData = markerDataMap.get(marker) || {};
+    if (markerData.peekBound === bindKey) return;
+    
+    markerData.peekBound = bindKey;
+    markerDataMap.set(marker, markerData);
 
     marker.style.cursor = "pointer";
     marker.style.pointerEvents = "auto";
-    marker.querySelectorAll(".peek-answer-tooltip").forEach(t => t.remove());
+    
+    // Remove existing tooltips
+    const existingTooltips = marker.querySelectorAll(".peek-answer-tooltip");
+    for (const t of existingTooltips) t.remove();
 
     const tooltip = document.createElement("div");
     tooltip.className = "peek-answer-tooltip";
@@ -851,8 +937,12 @@ async function applyPanoToAnswerMarker(marker, pano, roundId) {
         openNativeStreetView(pano);
     };
 
-    marker.removeEventListener("click", marker._peekHandler);
-    marker._peekHandler = clickHandler;
+    // Use WeakMap for event handler cleanup
+    const oldHandler = markerHandlerMap.get(marker);
+    if (oldHandler) {
+        marker.removeEventListener("click", oldHandler);
+    }
+    markerHandlerMap.set(marker, clickHandler);
     marker.addEventListener("click", clickHandler);
 }
 function getGeneration(worldsize, country, lat, date) {
@@ -1198,13 +1288,13 @@ function togglePhotoMode(photoControl, viewer) {
         enterFullscreen(panoDiv);
 
         const footer = document.querySelectorAll('.gmnoprint');
-        footer.forEach(el => {
+        for (const el of footer) {
             el.style.display = 'none';
-        });
+        }
 
-        controls.forEach(ctrl => {
+        for (const ctrl of controls) {
             ctrl.style.display = 'none';
-        });
+        }
         if (panoSelect) panoSelect.style.display = 'none';
 
         viewer.setOptions({
@@ -1237,9 +1327,9 @@ function togglePhotoMode(photoControl, viewer) {
             color: '#fff'
         });
     } else {
-        controls.forEach(ctrl => {
+        for (const ctrl of controls) {
             ctrl.style.display = '';
-        });
+        }
         if (panoSelect) panoSelect.style.display = '';
 
         viewer.setOptions({
@@ -1506,12 +1596,13 @@ function showMapList() {
     element.id = 'peek-map-list';
     element.className = 'peek-modal';
 
-    let recentMapsSection = ``;
+    // Use array join for better string concatenation performance
+    let recentMapsSection = '';
     if (PEEK_STATE.recentMaps.length > 0) {
-        let recentMapsHTML = '';
+        const recentMapsArr = [];
         for (const m of PEEK_STATE.recentMaps) {
             if (m.archivedAt) continue;
-            recentMapsHTML += `<div class="map">
+            recentMapsArr.push(`<div class="map">
                 <a href="https://map-making.app/maps/${m.id}" class="map-link">
 				    <span class="map-name">${m.name}</span>
                 </a>
@@ -1519,35 +1610,35 @@ function showMapList() {
 					<span class="map-add" data-id="${m.id}">ADD</span>
 					<span class="map-added">ADDED</span>
 				</span>
-			</div>`;
+			</div>`);
         }
 
         recentMapsSection = `
 			<h3>Recent Maps</h3>
 
 			<div class="maps">
-				${recentMapsHTML}
+				${recentMapsArr.join('')}
 			</div>
 
 			<br>
 		`;
     }
 
-    let mapsHTML = '';
-    let tagButtonsHTML = '';
+    const mapsArr = [];
+    const tagButtonsArr = [];
     if (LOCATION) {
         for (const tag of LOCATION.tagFields) {
-            tagButtonsHTML += `<button class="tag-button" data-tag="${tag}">${tag}</button>`;
+            tagButtonsArr.push(`<button class="tag-button" data-tag="${tag}">${tag}</button>`);
         }
     }
     if (previousTags.length > 0) {
         for (const tag of previousTags) {
-            tagButtonsHTML += `<button class="tag-button" data-tag="${tag}">${tag}</button>`;
+            tagButtonsArr.push(`<button class="tag-button" data-tag="${tag}">${tag}</button>`);
         }
     }
     for (const m of MAP_LIST) {
         if (m.archivedAt) continue;
-        mapsHTML += `<div class="map">
+        mapsArr.push(`<div class="map">
             <a href="https://map-making.app/maps/${m.id}" class="map-link">
 			    <span class="map-name">${m.name}</span>
             </a>
@@ -1555,7 +1646,7 @@ function showMapList() {
 				<span class="map-add" data-id="${m.id}">ADD</span>
 				<span class="map-added">ADDED</span>
 			</span>
-		</div>`;
+		</div>`);
     }
 
     element.innerHTML = `
@@ -1565,7 +1656,7 @@ function showMapList() {
 		<input type="text" class="tag-input" id="peek-map-tags" />
 
         <div class="tag-buttons">
-            ${tagButtonsHTML}
+            ${tagButtonsArr.join('')}
         </div>
 
 		<br><br>
@@ -1575,7 +1666,7 @@ function showMapList() {
 		<h3>All Maps</h3>
 
 		<div class="maps">
-			${mapsHTML}
+			${mapsArr.join('')}
 		</div>
 	</div>
 
@@ -1586,10 +1677,11 @@ function showMapList() {
 
     element.querySelector('.dim').addEventListener('click', closeMapList);
 
-    document.getElementById('peek-map-tags').addEventListener('keyup', e => e.stopPropagation());
-    document.getElementById('peek-map-tags').addEventListener('keydown', e => e.stopPropagation());
-    document.getElementById('peek-map-tags').addEventListener('keypress', e => e.stopPropagation());
-    document.getElementById('peek-map-tags').focus();
+    const tagInput = document.getElementById('peek-map-tags');
+    tagInput.addEventListener('keyup', e => e.stopPropagation());
+    tagInput.addEventListener('keydown', e => e.stopPropagation());
+    tagInput.addEventListener('keypress', e => e.stopPropagation());
+    tagInput.focus();
 
     for (const map of element.querySelectorAll('.maps .map-add')) {
         map.addEventListener('click', addLocationToMap);
@@ -1641,10 +1733,12 @@ function addLocationToMap(e) {
     }
 
     saveState();
-    const tagList = document.getElementById('peek-map-tags').value.split(',').map(t => t.trim()).filter(t => t.length > 0)
-    const customTags = tagList.filter(tag => !LOCATION.tagFields.includes(tag));
-    const merged = [...customTags, ...previousTags].filter((t, i, arr) => arr.indexOf(t) === i);
-    const limited = merged.slice(0, 5);
+    const tagList = document.getElementById('peek-map-tags').value.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    // Use Set for efficient deduplication
+    const tagFieldsSet = new Set(LOCATION.tagFields);
+    const customTags = tagList.filter(tag => !tagFieldsSet.has(tag));
+    const mergedSet = new Set([...customTags, ...previousTags]);
+    const limited = [...mergedSet].slice(0, 5);
     GM_setValue('previousTags', JSON.stringify(limited));
     importLocations(id, [{
         id: -1,
