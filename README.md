@@ -15,12 +15,6 @@
 - **📐 Resizable Map**: In Duel mode, resize the map container in 8 directions - your preferred size is saved automatically
 - **💾 Map Making Integration**: Save locations to [Map Making App](https://map-making.app) with one click
 
-## 🎹 Keyboard Shortcuts
-
-| Key | Function |
-|------|------|
-| `P` | Toggle real-time Street View preview tooltip |
-
 ## 📥 Installation
 
 1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension (compatible with Chrome, Firefox, Edge, and other major browsers)

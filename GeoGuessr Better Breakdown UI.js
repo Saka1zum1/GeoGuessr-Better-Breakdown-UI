@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Geoguessr Better Breakdown UI
 // @namespace    https://greasyfork.org/users/1179204
-// @version      1.1.2
+// @version      1.1.7
 // @description  built-in StreetView Window to view where you guessed and the correct location
 // @author       KaKa, Alien Perfect
 // @match        https://www.geoguessr.com/*
@@ -16,6 +16,7 @@
 // @grant        GM_openInTab
 // @grant        unsafeWindow
 // @license      MIT
+// @downloadURL none
 // ==/UserScript==
 
 "use strict";
@@ -104,12 +105,12 @@ let cleanStyle = null;
 let peekMarker = null;
 let mapObserver = null;
 let panoSelector = null;
+let closeControl = null;
 let gameLoopTimer = null;
 let coverageLayer = null;
 let markerObserver = null;
 let currentGameToken = null;
 let lastClickedCoords = null;
-let realTimePreviewTooltip = null;
 let movementPath = [];
 let pathPolyline = null;
 
@@ -119,7 +120,6 @@ let gameLoopRunning = false;
 let clickListenerAttached = false;
 
 let MAP_MAKING_API_KEY = GM_getValue("MAP_MAKING_API_KEY", "PASTE_YOUR_KEY_HERE");
-let isRealTimeTooltip = GM_getValue("realTimeTooltip", false);
 let MAP_LIST;
 let LOCATION;
 let previousMapId = JSON.parse(GM_getValue('previousMapId', null));
@@ -224,14 +224,9 @@ function attachClickListener(map) {
             lat: e.latLng.lat(),
             lng: e.latLng.lng()
         };
-
-        if (!document.querySelector(SELECTORS.roundEnd) &&
-            !document.querySelector(SELECTORS.gameEnd)&&(!document.querySelector(SELECTORS.duelEnd))) {
-            const pano = await getNearestPano(lastClickedCoords);
-            const marker = document.querySelector(SELECTORS.markerList)
-            if (marker) updateRealtimePreview(marker, pano);
-        }
-        else {
+        if (document.querySelector(SELECTORS.roundEnd) ||
+            document.querySelector(SELECTORS.gameEnd)||
+            (document.querySelector(SELECTORS.duelEnd))){
             if (!isCoverageLayer) return
             const pano = await getNearestPano(lastClickedCoords);
             if (!pano || pano.error) return
@@ -248,7 +243,6 @@ function attachClickListener(map) {
                 });
             } else {
                 peekMarker.setPosition(pano.location);
-
             }
             openNativeStreetView(pano)
         }
@@ -285,9 +279,9 @@ function startMarkerObserver() {
 
     markerObserver = new MutationObserver((mutations) => {
         // More precise filtering: only trigger on relevant mutations
-        const hasRelevantChange = mutations.some(m => 
-            m.addedNodes.length > 0 || m.removedNodes.length > 0
-        );
+        const hasRelevantChange = mutations.some(m =>
+                                                 m.addedNodes.length > 0 || m.removedNodes.length > 0
+                                                );
         if (hasRelevantChange) {
             throttledScheduleGameLoop();
         }
@@ -319,15 +313,14 @@ function startMapObserver() {
 
     mapObserver = new MutationObserver((mutations) => {
         if (!mutations.some(m => m.addedNodes.length > 0)) return;
-
-        const mapEl = document.querySelector(SELECTORS.guessMap) || document.querySelector(SELECTORS.resultMap)|| document.querySelector(SELECTORS.duelMap);
+        const duelMap = document.querySelector(SELECTORS.duelMap)
+        const mapEl = document.querySelector(SELECTORS.guessMap) || document.querySelector(SELECTORS.resultMap)|| duelMap;
         if (!mapEl) return;
-
         guessMap = getGuessMapInstance(mapEl);
         if (guessMap && !clickListenerAttached) {
             attachClickListener(guessMap);
             clickListenerAttached = true;
-            if(document.querySelector(SELECTORS.duelMap))makeMapResizable()
+            if(duelMap && window.location.href.includes('summary'))makeMapResizable()
             stopMapObserver();
         }
     });
@@ -361,12 +354,12 @@ function toggleCoverageLayer(action) {
 }
 
 function addCreditToPage() {
-    const isDuelEnd = document.querySelector(SELECTORS.duelMap)
+    const isDuelEnd = document.querySelector(SELECTORS.duelMap) && window.location.href.includes('summary')
     let container = document.querySelector(`div[data-qa="result-view-top"]`);
     if (!container && isDuelEnd) {
         container = isDuelEnd.parentElement;
     }
-    
+
     if (!container || document.getElementById('peek-credit-container')) return;
     const element = document.createElement('div');
     element.id = 'peek-credit-container';
@@ -389,7 +382,7 @@ async function gameLoop() {
     const duelEndEl = document.querySelector(SELECTORS.duelEnd);
     const isRoundEnd = !!roundEndEl;
     const isGameEnd = !!gameEndEl;
-    const isDuelEnd = !!duelEndEl;
+    const isDuelEnd = !!duelEndEl
     const isRoundMarker = document.querySelector(SELECTORS.roundMarker);
 
     if ((!token || !round) && !isDuelEnd) return;
@@ -408,7 +401,7 @@ async function gameLoop() {
             if(!data) continue
             await applyPanoToDuelMarker(marker, data);
         }
-        addDuelRoundsPanel();
+        if(window.location.href.includes('summary'))addDuelRoundsPanel();
     }
     else{
         if (token !== currentGameToken) {
@@ -515,54 +508,11 @@ function positionTooltip(marker, tooltip) {
     }
 }
 
-function updateRealtimePreview(marker, pano) {
-    if (!realTimePreviewTooltip) {
-        realTimePreviewTooltip = document.createElement("div");
-        realTimePreviewTooltip.className = "peek-realtime-tooltip";
-        realTimePreviewTooltip.style.display = isRealTimeTooltip ? 'block' : 'none';
-        realTimePreviewTooltip.innerHTML = `
-            <button class="peek-close-btn">×</button>
-            <div class="peek-body">
-                <img class="peek-thumb" alt="Street View Preview" loading="lazy">
-            </div>
-            <div class="peek-error" style="display:none;">No Street View found within 250km</div>
-        `;
-        realTimePreviewTooltip.querySelector(".peek-close-btn")?.addEventListener("click", (e) => {
-            e.stopPropagation();
-            isRealTimeTooltip = false;
-            saveRealTimeTooltipState(false);
-            realTimePreviewTooltip.style.display = "none";
-        });
-
-        marker.style.cursor = "pointer";
-        marker.style.pointerEvents = "auto";
-    }
-
-    const imgEl = realTimePreviewTooltip.querySelector(".peek-thumb");
-    const peakBody = realTimePreviewTooltip.querySelector(".peek-body");
-    const peakError = realTimePreviewTooltip.querySelector(".peek-error");
-
-    if (pano.error) {
-        peakError.style.display = 'block';
-        peakBody.style.display = "none";
-    } else {
-        peakError.style.display = 'none';
-        peakBody.style.display = 'block';
-        imgEl.src = getStreetViewThumbUrl(pano);
-    }
-
-    positionTooltip(marker, realTimePreviewTooltip);
-    if (!marker.querySelector('.peek-realtime-tooltip')) {
-        marker.appendChild(realTimePreviewTooltip);
-    }
-
-}
-
 function applyPanoToGuessMarker(marker, pano, roundId) {
     const bindKey = `bound_${roundId}`;
     const markerData = markerDataMap.get(marker) || {};
     if (markerData.peekBound === bindKey) return;
-    
+
     markerData.peekBound = bindKey;
     markerData.pano = pano.error ? "false" : "true";
     markerDataMap.set(marker, markerData);
@@ -582,7 +532,7 @@ function applyPanoToGuessMarker(marker, pano, roundId) {
     } else {
         tooltip.innerHTML = `
             <div class="peek-header">
-                <span class="peek-dist">${formatDistance(pano.radius)}</span> away
+                <span class="peek-dist">${formatDistance(pano.radius)}</span> away from the nearest street view
             </div>
             <div class="peek-body">
                 <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb" alt="Preview">
@@ -645,13 +595,70 @@ function addDuelRoundsPanel() {
         const clonedRound = round.cloneNode(true);
         roundsContainer.appendChild(clonedRound);
     }
+    const summaryTitle = document.querySelector('[class*="game-summary_summaryTitle"]');
+    if (summaryTitle) summaryTitle.style.display = "none";
 
+    const gameModeBrand = document.querySelector('[class*="game-mode-brand_root"]');
+    const gameMode = document.querySelector('[class*="game-mode-brand_selected"]');
+    const mapName=document.querySelector('[class*="game-mode-brand_mapName"]');
+    gameModeBrand.style.display = "none";
+
+    const gameModeHeader = document.createElement('div');
+    gameModeHeader.className = 'peek-duel-game-header';
+
+    const gameModeContainer = document.createElement('div');
+    gameModeContainer.className = 'peek-duel-game-info';
+
+    if (gameMode) {
+        const clonedGameMode = gameMode.cloneNode(true);
+        // Reset positioning styles that might cause misalignment
+        clonedGameMode.style.position = 'static';
+        clonedGameMode.style.transform = 'none';
+        clonedGameMode.style.left = 'auto';
+        clonedGameMode.style.top = 'auto';
+        clonedGameMode.style.right = 'auto';
+        clonedGameMode.style.bottom = 'auto';
+        gameModeContainer.appendChild(clonedGameMode);
+    }
+
+    if (mapName) {
+        const clonedMapName = mapName.cloneNode(true);
+        // Reset positioning styles that might cause misalignment
+        clonedMapName.style.position = 'static';
+        clonedMapName.style.transform = 'none';
+        clonedMapName.style.left = 'auto';
+        clonedMapName.style.top = 'auto';
+        clonedMapName.style.right = 'auto';
+        clonedMapName.style.bottom = 'auto';
+        gameModeContainer.appendChild(clonedMapName);
+    }
+
+    if (gameMode || mapName) {
+        gameModeHeader.appendChild(gameModeContainer);
+        panelContent.appendChild(gameModeHeader);
+    }
     const clonedRoundElements = roundsContainer.querySelectorAll('[class*="game-summary_playedRound"]');
     const originalRoundElements = document.querySelectorAll('[class*="game-summary_playedRounds"]:not(.peek-duel-rounds-list) [class*="game-summary_playedRound"]');
 
-    // Helper function defined once outside the loop
     const getSelectedClass = (element) => {
         return Array.from(element.classList).find(cls => cls.includes('game-summary_selectedRound'));
+    };
+
+    const roundIndicator = document.createElement('div');
+    roundIndicator.className = 'peek-round-indicator';
+    roundIndicator.textContent = 'Round 1';
+    mapContainer.appendChild(roundIndicator);
+    const updateRoundIndicator = () => {
+        const selectedElement = roundsContainer.querySelector('[class*="game-summary_selectedRound"]');
+        if (selectedElement) {
+            const textElement = selectedElement.querySelector('[class*="game-summary_text__"]');
+            if (textElement) {
+                const match = textElement.textContent.match(/Round\s+(\d+)/i);
+                if (match) {
+                    roundIndicator.textContent = `Round ${match[1]}`;
+                }
+            }
+        }
     };
 
     clonedRoundElements.forEach((roundElement, index) => {
@@ -659,34 +666,76 @@ function addDuelRoundsPanel() {
             e.preventDefault();
             e.stopPropagation();
 
+            const selectedClass = getSelectedClass(roundElement);
+            const isAlreadySelected = selectedClass && roundElement.classList.contains(selectedClass);
+
+            if (isAlreadySelected) {
+                return;
+            }
+
+            // Remove selected class from all cloned elements
             for (const el of clonedRoundElements) {
                 const selectedClass = getSelectedClass(el);
                 if (selectedClass) el.classList.remove(selectedClass);
             }
 
-
+            // Remove selected class from all original elements
             for (const el of originalRoundElements) {
                 const selectedClass = getSelectedClass(el);
                 if (selectedClass) el.classList.remove(selectedClass);
             }
 
-            const originalElement = originalRoundElements[index-2];
+            const originalElement = originalRoundElements[index - 2];
             if (originalElement && typeof originalElement.click === 'function') {
+                // Trigger the original element click
                 originalElement.click();
-                
+
+                // Wait for the original element to be processed, then sync both elements
                 setTimeout(() => {
                     const selectedClass = getSelectedClass(originalElement);
                     if (selectedClass) {
-                        originalElement.classList.remove(selectedClass);
-                        roundElement.classList.add(selectedClass);
+                        // Keep both original and cloned elements selected
+                        if (!originalElement.classList.contains(selectedClass)) {
+                            originalElement.classList.add(selectedClass);
+                        }
+                        if (!roundElement.classList.contains(selectedClass)) {
+                            roundElement.classList.add(selectedClass);
+                        }
                     }
-                }, 0);
+                    // 更新回合指示器
+                    updateRoundIndicator();
+                }, 50); // Increase timeout to ensure proper state synchronization
             }
+
+            if (closeControl) closeControl.click();
+            toggleCoverageLayer("off");
         });
     });
-
     panelContent.appendChild(roundsContainer);
     panel.appendChild(panelContent);
+
+    originalRoundElements.forEach((originalEl, index) => {
+        const clonedEl = clonedRoundElements[index + 2];
+        if (clonedEl) {
+            originalEl.addEventListener('click', () => {
+                setTimeout(() => {
+                    const selectedClass = getSelectedClass(originalEl);
+                    if (selectedClass && originalEl.classList.contains(selectedClass)) {
+                        clonedRoundElements.forEach(el => {
+                            const cls = getSelectedClass(el);
+                            if (cls) el.classList.remove(cls);
+                        });
+                        clonedEl.classList.add(selectedClass);
+                        updateRoundIndicator();
+                    }
+                }, 50);
+            });
+        }
+        originalEl.style.display='none'
+    });
+
+    // 初始化回合指示器
+    updateRoundIndicator();
 
     const closeButton = document.createElement('button');
     closeButton.className = 'peek-duel-rounds-close';
@@ -697,6 +746,7 @@ function addDuelRoundsPanel() {
     mapContainer.appendChild(toggleButton);
     mapContainer.appendChild(panel);
 
+
     const togglePanel = () => {
         const isActive = panel.classList.toggle('active');
         toggleButton.classList.toggle('active');
@@ -704,8 +754,15 @@ function addDuelRoundsPanel() {
         toggleButton.style.pointerEvents = isActive ? 'none' : 'auto';
     };
 
+    const closePanel = () => {
+        panel.classList.remove('active');
+        toggleButton.classList.remove('active');
+        toggleButton.style.opacity = '1';
+        toggleButton.style.pointerEvents = 'auto';
+    };
+
     toggleButton.addEventListener('click', togglePanel);
-    closeButton.addEventListener('click', togglePanel);
+    closeButton.addEventListener('click', closePanel);
 
     panel.addEventListener('click', (e) => {
         if (e.target === panel) {
@@ -715,12 +772,16 @@ function addDuelRoundsPanel() {
 }
 
 function makeMapResizable() {
+    const summaryContainer =document.querySelector('[class^="game-summary_innerContainer"]');
+    const summaryBottom = document.querySelector('[class^="game-summary_bottom"]');
+    if(summaryContainer)summaryContainer.style.paddingBottom='0'
+    if(summaryBottom) summaryBottom.style.minHeight= '4rem'
     const mapContainer = document.querySelector('[class*="game-summary_mapContainer"]');
     if (!mapContainer) return;
-    
+
     const containerData = initializedContainers.get(mapContainer) || {};
     if (containerData.resizable) return;
-    
+
     containerData.resizable = true;
     initializedContainers.set(mapContainer, containerData);
     mapContainer.style.position = 'relative';
@@ -728,11 +789,11 @@ function makeMapResizable() {
     const savedSize = GM_getValue('mapContainerSize', { width: null, height: null });
     if (savedSize.width && savedSize.height) {
         mapContainer.style.width = `${savedSize.width}px`;
-        mapContainer.style.height = `${savedSize.height}px`;
+        mapContainer.style.height = `${Math.min(window.innerHeight-160,savedSize.height)}px`;
     }
 
     const resizerStyle = {
-        position: 'absolute',
+        position: 'fixed',
         background: 'rgba(100, 100, 255, 0.3)',
         transition: 'background 0.2s',
         zIndex: 10010
@@ -813,7 +874,7 @@ function makeMapResizable() {
         const minWidth = 300;
         const maxWidth = window.innerWidth - 100;
         const minHeight = 250;
-        const maxHeight = window.innerHeight - 200;
+        const maxHeight = window.innerHeight-160;
 
         newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
         newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
@@ -880,7 +941,7 @@ async function applyPanoToDuelMarker(marker, data){
     else {
         tooltip.innerHTML = `
             <div class="peek-header">
-                <span class="peek-dist">${formatDistance(pano.radius)}</span> away
+                <span class="peek-dist">${formatDistance(pano.radius)}</span> away from the nearest street view
             </div>
             <div class="peek-body">
                 <img src="${getStreetViewThumbUrl(pano)}" class="peek-thumb" alt="Preview">
@@ -910,13 +971,13 @@ function applyPanoToAnswerMarker(marker, pano, roundId) {
     const bindKey = `answer_${roundId}`;
     const markerData = markerDataMap.get(marker) || {};
     if (markerData.peekBound === bindKey) return;
-    
+
     markerData.peekBound = bindKey;
     markerDataMap.set(marker, markerData);
 
     marker.style.cursor = "pointer";
     marker.style.pointerEvents = "auto";
-    
+
     // Remove existing tooltips
     const existingTooltips = marker.querySelectorAll(".peek-answer-tooltip");
     for (const t of existingTooltips) t.remove();
@@ -1191,16 +1252,19 @@ async function getShortLink() {
     }
 }
 
-async function updatePanoSelector(panoId, selector) {
+async function updatePanoSelector(pano, selector) {
     if (!svs) initSVS();
     const panoData = await new Promise((resolve, reject) => {
-        svs.getPanorama({ pano: panoId }, (data, status) => {
-            if (status === google.maps.StreetViewStatus.OK) {
-                resolve(data);
-            } else {
-                reject(status);
+        svs.getPanorama(
+            pano.panoId ? { pano: pano.panoId } : { location: pano.location },
+            (data, status) => {
+                if (status === google.maps.StreetViewStatus.OK) {
+                    resolve(data);
+                } else {
+                    reject(new Error(`StreetView request failed: ${status}`));
+                }
             }
-        });
+        );
     });
     if (!panoData || !panoData.time || !panoData.imageDate) return
     const frag = document.createDocumentFragment();
@@ -1313,19 +1377,6 @@ function togglePhotoMode(photoControl, viewer) {
       [alt="Google"] {display: none !important}
       [class$="gmnoprint"], [class$="gm-style-cc"], [class$="gm-compass"] {display: none !important}
     `);
-
-        Swal.fire({
-            title: 'Photo Mode',
-            text: 'Press ESC to exit photo mode',
-            icon: 'info',
-            timer: 2500,
-            timerProgressBar: true,
-            showConfirmButton: false,
-            position: 'bottom',
-            toast: true,
-            background: 'rgba(30, 30, 30, 0.95)',
-            color: '#fff'
-        });
     } else {
         for (const ctrl of controls) {
             ctrl.style.display = '';
@@ -1365,7 +1416,7 @@ function openNativeStreetView(pano) {
     const isDuelMode = !!document.querySelector(SELECTORS.duelMap);
     const actualContainer = isDuelMode ? mapContainer.parentElement : mapContainer;
 
-    offsetMapFocus(guessMap, pano.location);
+    //offsetMapFocus(guessMap, pano.location);
 
     let coverageLayerControl = document.getElementById('layer-toggle');
     if (!coverageLayerControl) {
@@ -1390,7 +1441,7 @@ function openNativeStreetView(pano) {
         splitContainer.className = 'peek-split-container';
         splitContainer.innerHTML = `
             <div class="peek-split-resizer"></div>
-            <div class="peek-split-pano"></div>
+            <div class="peek-split-pano" id="peek-pano"></div>
         `;
         actualContainer.appendChild(splitContainer);
 
@@ -1432,7 +1483,7 @@ function openNativeStreetView(pano) {
             }
         });
 
-        const panoDiv = splitContainer.querySelector('.peek-split-pano');
+        const panoDiv = document.getElementById('peek-pano');
 
         viewer = new google.maps.StreetViewPanorama(panoDiv, {
             pov: {
@@ -1450,14 +1501,14 @@ function openNativeStreetView(pano) {
         pano.panoId?viewer.setPano(pano.panoId):viewer.setPosition(pano.location)
 
         viewer.addListener("pano_changed", function () {
-
+            updatePanoSelector({panoId:viewer.getPano()}, panoSelector)
         });
 
         viewer.addListener("position_changed", function () {
             trackMovement();
         });
 
-        const closeControl = document.createElement('button')
+        closeControl = document.createElement('button')
         closeControl.className = 'peek-control'
         closeControl.id = 'peek-split-close'
         closeControl.textContent = '×'
@@ -1468,6 +1519,7 @@ function openNativeStreetView(pano) {
             splitContainer.classList.remove('active');
             removePeekMarker();
             clearMovementPath();
+            toggleCoverageLayer("off")
         };
         viewer.controls[google.maps.ControlPosition.RIGHT_TOP].push(closeControl);
 
@@ -1583,7 +1635,7 @@ function openNativeStreetView(pano) {
 
     requestAnimationFrame(() => {
         spawn=pano;
-        updatePanoSelector(pano.panoId, document.getElementById('pano-select'));
+        updatePanoSelector(pano, document.getElementById('pano-select'));
         clearMovementPath();
         splitContainer.classList.add('active');
     });
@@ -1892,10 +1944,6 @@ async function commitRoundResult({
     committedRounds.add(commitKey);
 }
 
-function saveRealTimeTooltipState(state) {
-    GM_setValue("realTimeTooltip", state);
-}
-
 function updateHistory(token, listKey) {
     let list = GM_getValue(listKey, []);
     list = list.filter(t => t !== token);
@@ -1976,662 +2024,701 @@ function main() {
         startMapObserver();
         loadState();
     });
-    let onKeyDown = async (e) => {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
-            return;
+
+    GM_addStyle(`
+    .peek-tooltip {
+        display: none;
+        position: absolute;
+        width: 300px;
+        background: rgba(26, 26, 26, 0.95);
+        color: white;
+        border: 1px solid #ffd700;
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 12px;
+        left: 50%;
+        bottom: 45px;
+        transform: translateX(-50%);
+        z-index: 10000;
+        pointer-events: none;
+        text-align: center;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
+
+    .peek-duel-tooltip {
+        display: none;
+        position: absolute;
+        width: 280px;
+        background: rgba(26, 26, 26, 0.95);
+        color: white;
+        border: none;
+        border-radius: 5px;
+        padding: 10px;
+        font-size: 12px;
+        left: 50%;
+        bottom: 45px;
+        transform: translateX(-50%);
+        z-index: 10000;
+        pointer-events: none;
+        text-align: center;
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.6);
+    }
+
+    .peek-duel-answer-tooltip {
+        display: none;
+        position: absolute;
+        width: 280px;
+        background: rgba(30, 30, 35, 0.96);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0;
+        left: 50%;
+        bottom: 45px;
+        transform: translateX(-50%);
+        z-index: 10000;
+        pointer-events: none;
+        text-align: center;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
+        overflow: hidden;
+    }
+
+    [data-pano="true"]:hover .peek-duel-tooltip,
+    [data-pano="false"]:hover .peek-duel-tooltip {
+        display: block;
+    }
+
+    [class*='result-map_roundPin']:hover .peek-duel-answer-tooltip {
+        display: block;
+    }
+
+    .peek-answer-tooltip {
+        display: none;
+        position: absolute;
+        width: 300px;
+        background: rgba(30, 30, 35, 0.96);
+        color: white;
+        border: 1px solid #4ade80;
+        border-radius: 6px;
+        padding: 0;
+        left: 50%;
+        bottom: 45px;
+        transform: translateX(-50%);
+        z-index: 10000;
+        pointer-events: none;
+        text-align: center;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
+        overflow: hidden;
+    }
+
+    .peek-close-btn {
+        position: absolute;
+        top: 2px;
+        right: 4px;
+        background: rgba(0, 0, 0, 0.4);
+        color: #ff6b6b;
+        border: none;
+        border-radius: 50%;
+        width: 18px;
+        height: 18px;
+        font-size: 12px;
+        line-height: 16px;
+        cursor: pointer;
+        z-index: 10003;
+    }
+
+    .peek-close-btn:hover {
+        background: rgba(255, 107, 107, 0.3);
+    }
+
+    .peek-split-container {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 50%;
+        height: 100%;
+        background: #000;
+        z-index: 10006;
+        transform: translateX(100%);
+        transition: transform 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
+        overflow: hidden;
+        box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
+    }
+
+    .peek-split-container.active {
+        transform: translateX(0);
+    }
+
+    .peek-split-resizer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 4px;
+        height: 100%;
+        background: #7dcc4c;
+        cursor: ew-resize;
+        z-index: 10007;
+    }
+
+    .peek-split-pano {
+        width: 100%;
+        height: 100%;
+    }
+
+    .peek-control {
+        background: none rgb(68, 68, 68);
+        border: 0px;
+        color: #b3b3b3;
+        font-size: 32px;
+        margin: 8px 10px;
+        padding: 0px;
+        text-transform: none;
+        appearance: none;
+        position: absolute;
+        cursor: pointer;
+        user-select: none;
+        border-radius: 2px;
+        height: 40px;
+        width: 40px;
+        box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
+        overflow: hidden;
+        z-index: 10008;
+    }
+
+    .peek-control:hover {
+        color: #e6e6e6;
+    }
+
+    .peek-map-control {
+        background: rgb(0, 0, 0, 0.8);
+        border: 0px;
+        padding: 8px;
+        text-transform: none;
+        appearance: none;
+        position: absolute;
+        cursor: pointer;
+        user-select: none;
+        border-radius: 100%;
+        height: 40px;
+        width: 40px;
+        box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
+        overflow: hidden;
+        opacity: 0.8;
+        z-index: 9999;
+    }
+
+    .peek-map-control:hover {
+        opacity: 1.0;
+    }
+
+    #layer-toggle {
+        bottom: 32px;
+        left: 24px;
+    }
+
+    .peek-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+    }
+
+    .peek-modal .dim {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        background: rgba(0, 0, 0, 0.75);
+    }
+
+    .peek-modal .text {
+        position: relative;
+        z-index: 1;
+    }
+
+    .peek-modal .inner {
+        box-sizing: border-box;
+        position: relative;
+        z-index: 1;
+        background: #fff;
+        padding: 20px;
+        margin: 20px;
+        width: calc(100% - 40px);
+        max-width: 500px;
+        overflow: auto;
+        color: #000;
+        flex: 0 1 auto;
+    }
+
+    #peek-loader {
+        color: #fff;
+        font-weight: bold;
+    }
+
+    .peek-credit {
+        position: absolute;
+        top: 1rem;
+        z-index: 9;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        align-items: flex-start;
+    }
+
+    #peek-main {
+        position: absolute;
+        width: 40px;
+        height: 40px;
+        top: 0.85rem;
+        right: 4rem;
+        z-index: 9;
+        display: flex;
+        border: none;
+        border-radius: 50%;
+        background: #00000099;
+        background-repeat: no-repeat;
+        background-position: 50%;
+        flex-direction: column;
+        gap: 5px;
+        align-items: flex-start;
+    }
+
+    #peek-main:hover {
+        cursor: pointer;
+        opacity: 0.8;
+    }
+
+    #peek-main::after {
+        display: none;
+        content: attr(data-text);
+        position: absolute;
+        top: 120%;
+        transform: translateX(-50%);
+        background-color: rgba(0, 0, 0, 1);
+        color: #fff;
+        padding: 5px;
+        border-radius: 5px;
+        font-weight: normal;
+        font-size: 11px;
+        line-height: 1;
+        height: auto;
+        white-space: nowrap;
+        transition: opacity 0.5s ease;
+    }
+
+    #peek-main:hover::after {
+        opacity: 1;
+        display: block;
+    }
+
+    .peek-credit.extra-pad {
+        top: 2.5rem;
+    }
+
+    .peek-credit-title {
+        font-size: 15px;
+        font-weight: bold;
+        text-shadow: rgb(204, 48, 46) 2px 0px 0px, rgb(204, 48, 46) 1.75517px 0.958851px 0px, rgb(204, 48, 46) 1.0806px 1.68294px 0px, rgb(204, 48, 46) 0.141474px 1.99499px 0px, rgb(204, 48, 46) -0.832294px 1.81859px 0px, rgb(204, 48, 46) -1.60229px 1.19694px 0px, rgb(204, 48, 46) -1.97998px 0.28224px 0px, rgb(204, 48, 46) -1.87291px -0.701566px 0px, rgb(204, 48, 46) -1.30729px -1.5136px 0px, rgb(204, 48, 46) -0.421592px -1.95506px 0px, rgb(204, 48, 46) 0.567324px -1.91785px 0px, rgb(204, 48, 46) 1.41734px -1.41108px 0px, rgb(204, 48, 46) 1.92034px -0.558831px 0px;
+        position: relative;
+        z-index: 1;
+    }
+
+    .peek-credit-subtitle {
+        font-size: 12px;
+        background: rgba(204, 48, 46, 0.4);
+        padding: 3px 5px;
+        border-radius: 5px;
+        position: relative;
+        z-index: 0;
+        top: -8px;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    }
+
+    .peek-credit-subtitle a:hover {
+        text-decoration: underline;
+    }
+
+    .peek-settings-option {
+        background: var(--ds-color-purple-100);
+        padding: 6px 10px;
+        border-radius: 5px;
+        font-size: 12px;
+        cursor: pointer;
+        opacity: 0.75;
+        transition: opacity 0.2s;
+        pointer-events: auto;
+    }
+
+    .peek-settings-option:hover {
+        opacity: 1;
+    }
+
+    #peek-map-list h3 {
+        margin-bottom: 10px;
+    }
+
+    #peek-map-list .tag-input {
+        display: block;
+        width: 100%;
+        font: inherit;
+        border: 1px solid #ccc;
+    }
+
+    #peek-map-list .maps {
+        max-height: 200px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        font-size: 15px;
+    }
+
+    #peek-map-list .map {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 20px;
+        padding: 8px;
+        transition: background 0.2s;
+    }
+
+    #peek-map-list .map:nth-child(2n) {
+        background: #f0f0f0;
+    }
+
+    #peek-map-list .map-buttons:not(.is-added) .map-added {
+        display: none !important;
+    }
+
+    #peek-map-list .map-buttons.is-added .map-add {
+        display: none !important;
+    }
+
+    #peek-map-list .map-add {
+        background: green;
+        color: #fff;
+        padding: 3px 6px;
+        border-radius: 5px;
+        font-size: 13px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+
+    #peek-map-list .map-added {
+        background: #000;
+        color: #fff;
+        padding: 3px 6px;
+        border-radius: 5px;
+        font-size: 13px;
+        font-weight: bold;
+    }
+
+    #pano-select {
+        width: 200px;
+        height: 40px;
+        padding: 5px;
+        font-size: 14px;
+        color: #FFFFFF;
+        position: absolute;
+        bottom: 4px !important;
+        border-radius: 5px;
+        box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
+        border: none;
+        cursor: pointer;
+        text-align: left;
+        z-index: 10007;
+        background-color: rgb(34, 34, 34, 0.9);
+    }
+
+    .map-name {
+        color: #007b8b;
+        text-decoration: underline;
+    }
+
+    .tag-buttons {
+        margin-top: 10px;
+    }
+
+    .tag-button {
+        margin: 5px 5px 0 0;
+        padding: 4px 10px;
+        border: 1px solid #ccc;
+        background: #f0f0f0;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: 0.2s;
+        font-size: 16px;
+        font-weight: bold;
+    }
+
+    .tag-button:hover {
+        background: #e0e0e0;
+    }
+
+    .tag-button.active {
+        background-color: green;
+        color: white;
+        border-color: green;
+    }
+
+    [data-pano="true"]:hover .peek-tooltip,
+    [data-pano="false"]:hover .peek-tooltip {
+        display: block;
+    }
+
+    [data-qa='correct-location-marker']:hover .peek-answer-tooltip {
+        display: block;
+    }
+
+    [data-pano="true"]> :first-child {
+        cursor: pointer;
+        --border-size-factor: 1.5 !important;
+    }
+
+    [data-pano="true"]:not([class^='result-map_map'])> :first-child {
+    --border-color: #E91E63 !important;
+    }
+
+    [data-pano="false"]:not([class^='result-map_map'])> :first-child {
+        cursor: initial;
+        --border-color: #323232 !important;
+        --border-size-factor: 1.5 !important;
+    }
+
+    [data-qa='guess-marker'] {
+        cursor: pointer !important;
+        z-index: 1000 !important;
+        transition: transform 0.2s;
+    }
+
+    .peek-header {
+        background: #111;
+        padding: 6px;
+        font-size: 11px;
+        color: #888;
+        text-align: center;
+        border-bottom: 1px solid #333;
+    }
+
+    .peek-dist {
+        color: #ffd700;
+        font-weight: bold;
+        font-size: 13px;
+    }
+
+    .peek-note {
+        font-size: 10px;
+        color: #ffd700;
+        margin-top: 4px;
+    }
+
+    .peek-body {
+        height: 150px;
+        background: #000;
+        overflow: hidden;
+        cursor: default;
+    }
+
+    .peek-thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .peek-error {
+        padding: 15px;
+        color: #ff4d4d;
+        font-size: 12px;
+        text-align: center;
+    }
+
+    .peek-duel-rounds-button {
+        position: absolute;
+        top: 15px;
+        left: 15px;
+        z-index: 10005;
+        width: 44px;
+        height: 44px;
+        background: rgba(34, 34, 34, 0.9);
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: rgba(0, 0, 0, 0.3) 0px 2px 6px;
+        transition: all 0.2s;
+        opacity:0.7;
+    }
+
+    .peek-duel-rounds-button:hover {
+        background: rgba(50, 50, 50, 0.95);
+        transform: scale(1.05);
+    }
+
+    .peek-duel-rounds-button.active {
+        background: rgba(66, 133, 244, 0.9);
+    }
+
+    .peek-duel-rounds-panel {
+        position: absolute;
+        top: 0;
+        left: -400px;
+        width: 400px;
+        height: 100%;
+        background: rgba(28, 28, 30, 0.98);
+        backdrop-filter: blur(10px);
+        z-index: 10004;
+        transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+        display: flex;
+        flex-direction: column;
+        opacity:0.9;
+    }
+
+    .peek-duel-rounds-panel.active {
+        left: 0;
+    }
+
+    .peek-duel-rounds-content {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 15px;
+        padding-top: 50px;
+    }
+
+    .peek-duel-game-header {
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .peek-duel-game-info {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .peek-duel-game-info * {
+        position: static !important;
+        transform: none !important;
+        left: auto !important;
+        top: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+    }
+
+    .peek-duel-game-info [class*="game-mode-brand_selected"] {
+        margin: 0;
+    }
+
+    .peek-duel-game-info [class*="game-mode-brand_mapName"] {
+        font-size: 14px;
+        opacity: 0.8;
+        margin: 0;
+    }
+
+    .peek-duel-rounds-list {
+        transform: scale(0.85);
+        transform-origin: top left;
+        width: 117.65%;
+        margin-bottom: -70%;
+    }
+
+    .peek-duel-rounds-content [class*="game-summary_playedRound"] {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 6px;
+        margin-bottom: 8px;
+        transition: background 0.2s;
+        cursor: pointer;
+        font-size: 0.75em;
+    }
+
+    .peek-duel-rounds-content [class*="game-summary_playedRound"]:hover {
+        background: rgba(255, 255, 255, 0.08);
+    }
+
+    .peek-duel-rounds-content [class*="game-summary_selectedRound"] {
+        background: rgba(66, 133, 244, 0.3) !important;
+        border-left: 3px solid rgba(66, 133, 244, 0.9);
+    }
+
+    .peek-duel-rounds-close {
+        position: absolute;
+        top: 15px;
+        right: 20px;
+        width: 28px;
+        height: 28px;
+        background: rgba(255, 255, 255, 0.1);
+        border: none;
+        border-radius: 50%;
+        color: #ffffff;
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s;
+        z-index: 10;
+    }
+
+    .peek-duel-rounds-close:hover {
+        background: rgba(255, 255, 255, 0.2);
+        transform: rotate(90deg);
+    }
+
+    .peek-round-indicator {
+        position: absolute;
+        top: 15px;
+        right: 50%;
+        z-index: 10003;
+        background: linear-gradient(135deg, rgba(121, 80, 229, 0.95) 0%, rgba(74, 35, 153, 0.95) 100%);
+        backdrop-filter: blur(10px);
+        color: rgb(255, 255, 255);
+        padding: 0.5rem 1.25rem;
+        border-radius: 6px;
+        font-family: 'ggFont', sans-serif;
+        font-size: 1rem;
+        line-height: 1.25rem;
+        font-weight: 700;
+        font-style: italic;
+        box-shadow: 0 0.375rem 0.625rem rgb(26 26 26/30%), 0 0.125rem 1.25rem 0 rgb(26 26 26/20%);
+        border: 1px solid rgba(166, 133, 255, 0.3);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+        user-select: none;
+    }
+
+    .peek-round-indicator:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 0.5rem 1rem rgb(26 26 26/40%), 0 0.25rem 1.5rem 0 rgb(26 26 26/30%);
+    }
+
+    @media (max-width: 768px) {
+        .peek-duel-rounds-panel {
+            width: 100%;
+            left: -100%;
         }
-        e.stopPropagation();
-        if (e.key.toLowerCase() === 'p') {
-            isRealTimeTooltip = !isRealTimeTooltip;
-            if (realTimePreviewTooltip) {
-                realTimePreviewTooltip.style.display = isRealTimeTooltip ? 'block' : 'none';
-            }
-            saveRealTimeTooltipState(isRealTimeTooltip);
+
+        .peek-duel-rounds-panel.active {
+            left: 0;
+        }
+
+        .peek-round-indicator {
+            top: 10px;
+            right: 10px;
+            padding: 0.4rem 1rem;
+            font-size: 0.875rem;
+            line-height: 1rem;
         }
     }
-    document.addEventListener("keydown", onKeyDown, true);
-    GM_addStyle(`
-.peek-tooltip {
-	display: none;
-	position: absolute;
-	width: 300px;
-	background: rgba(26, 26, 26, 0.95);
-	color: white;
-	border: 1px solid #ffd700;
-	border-radius: 4px;
-	padding: 8px;
-	font-size: 12px;
-	left: 50%;
-	bottom: 45px;
-	transform: translateX(-50%);
-	z-index: 9999;
-	pointer-events: none;
-	text-align: center;
-	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    `)
 }
 
-.peek-tooltip .peek-duel{
-	width:150px;
-}
-
-.peek-duel-tooltip {
-	display: none;
-	position: absolute;
-	width: 280px;
-	background: rgba(26, 26, 26, 0.95);
-	color: white;
-	border: 1px solid #60a5fa;
-	border-radius: 5px;
-	padding: 10px;
-	font-size: 12px;
-	left: 50%;
-	bottom: 45px;
-	transform: translateX(-50%);
-	z-index: 9999;
-	pointer-events: none;
-	text-align: center;
-	box-shadow: 0 3px 12px rgba(0, 0, 0, 0.6);
-}
-
-.peek-duel-answer-tooltip {
-	display: none;
-	position: absolute;
-	width: 280px;
-	background: rgba(30, 30, 35, 0.96);
-	color: white;
-	border: 1px solid #34d399;
-	border-radius: 6px;
-	padding: 0;
-	left: 50%;
-	bottom: 45px;
-	transform: translateX(-50%);
-	z-index: 10000;
-	pointer-events: none;
-	text-align: center;
-	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
-	overflow: hidden;
-}
-
-[data-pano="true"]:hover .peek-duel-tooltip,
-[data-pano="false"]:hover .peek-duel-tooltip {
-	display: block;
-}
-
-[class*='result-map_roundPin']:hover .peek-duel-answer-tooltip {
-	display: block;
-}
-
-.peek-answer-tooltip {
-	display: none;
-	position: absolute;
-	width: 300px;
-	background: rgba(30, 30, 35, 0.96);
-	color: white;
-	border: 1px solid #4ade80;
-	border-radius: 6px;
-	padding: 0;
-	left: 50%;
-	bottom: 45px;
-	transform: translateX(-50%);
-	z-index: 10000;
-	pointer-events: none;
-	text-align: center;
-	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
-	overflow: hidden;
-}
-
-.peek-realtime-tooltip {
-	position: absolute;
-	width: 300px;
-	background: rgba(30, 30, 35, 0.96);
-	color: white;
-	border: 1px solid #4ade80;
-	border-radius: 6px;
-	padding: 0;
-	z-index: 10002;
-	pointer-events: auto;
-	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.65);
-	overflow: hidden;
-}
-
-.peek-close-btn {
-	position: absolute;
-	top: 2px;
-	right: 4px;
-	background: rgba(0, 0, 0, 0.4);
-	color: #ff6b6b;
-	border: none;
-	border-radius: 50%;
-	width: 18px;
-	height: 18px;
-	font-size: 12px;
-	line-height: 16px;
-	cursor: pointer;
-	z-index: 10003;
-}
-
-.peek-close-btn:hover {
-	background: rgba(255, 107, 107, 0.3);
-}
-
-.peek-split-container {
-	position: absolute;
-	top: 0;
-	right: 0;
-	width: 50%;
-	height: 100%;
-	background: #000;
-	z-index: 10006;
-	transform: translateX(100%);
-	transition: transform 0.4s cubic-bezier(0.165, 0.84, 0.44, 1);
-	overflow: hidden;
-	box-shadow: -5px 0 20px rgba(0, 0, 0, 0.5);
-}
-
-.peek-split-container.active {
-	transform: translateX(0);
-}
-
-.peek-split-resizer {
-	position: absolute;
-	left: 0;
-	top: 0;
-	width: 4px;
-	height: 100%;
-	background: #7dcc4c;
-	cursor: ew-resize;
-	z-index: 10007;
-}
-
-.peek-split-pano {
-	width: 100%;
-	height: 100%;
-}
-
-.peek-control {
-	background: none rgb(68, 68, 68);
-	border: 0px;
-	color: #b3b3b3;
-	font-size: 32px;
-	margin: 8px 10px;
-	padding: 0px;
-	text-transform: none;
-	appearance: none;
-	position: absolute;
-	cursor: pointer;
-	user-select: none;
-	border-radius: 2px;
-	height: 40px;
-	width: 40px;
-	box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
-	overflow: hidden;
-	z-index: 10008;
-}
-
-.peek-control:hover {
-	color: #e6e6e6;
-}
-
-.peek-map-control {
-	background: rgb(0, 0, 0, 0.8);
-	border: 0px;
-	padding: 8px;
-	text-transform: none;
-	appearance: none;
-	position: absolute;
-	cursor: pointer;
-	user-select: none;
-	border-radius: 100%;
-	height: 40px;
-	width: 40px;
-	box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
-	overflow: hidden;
-	opacity: 0.8;
-	z-index: 9999;
-}
-
-.peek-map-control:hover {
-	opacity: 1.0;
-}
-
-#layer-toggle {
-	bottom: 32px;
-	left: 24px;
-}
-
-.peek-modal {
-	position: fixed;
-	inset: 0;
-	z-index: 99999;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-direction: column;
-}
-
-.peek-modal .dim {
-	position: fixed;
-	inset: 0;
-	z-index: 0;
-	background: rgba(0, 0, 0, 0.75);
-}
-
-.peek-modal .text {
-	position: relative;
-	z-index: 1;
-}
-
-.peek-modal .inner {
-	box-sizing: border-box;
-	position: relative;
-	z-index: 1;
-	background: #fff;
-	padding: 20px;
-	margin: 20px;
-	width: calc(100% - 40px);
-	max-width: 500px;
-	overflow: auto;
-	color: #000;
-	flex: 0 1 auto;
-}
-
-#peek-loader {
-	color: #fff;
-	font-weight: bold;
-}
-
-.peek-credit {
-	position: absolute;
-	top: 1rem;
-	z-index: 9;
-	display: flex;
-	flex-direction: column;
-	gap: 5px;
-	align-items: flex-start;
-}
-
-#peek-main {
-	position: absolute;
-	width: 40px;
-	height: 40px;
-	top: 0.85rem;
-	right: 4rem;
-	z-index: 9;
-	display: flex;
-	border: none;
-	border-radius: 50%;
-	background: #00000099;
-	background-repeat: no-repeat;
-	background-position: 50%;
-	flex-direction: column;
-	gap: 5px;
-	align-items: flex-start;
-}
-
-#peek-main:hover {
-	cursor: pointer;
-	opacity: 0.8;
-}
-
-#peek-main::after {
-	display: none;
-	content: attr(data-text);
-	position: absolute;
-	top: 120%;
-	transform: translateX(-50%);
-	background-color: rgba(0, 0, 0, 1);
-	color: #fff;
-	padding: 5px;
-	border-radius: 5px;
-	font-weight: normal;
-	font-size: 11px;
-	line-height: 1;
-	height: auto;
-	white-space: nowrap;
-	transition: opacity 0.5s ease;
-}
-
-#peek-main:hover::after {
-	opacity: 1;
-	display: block;
-}
-
-.peek-credit.extra-pad {
-	top: 2.5rem;
-}
-
-.peek-credit-title {
-	font-size: 15px;
-	font-weight: bold;
-	text-shadow: rgb(204, 48, 46) 2px 0px 0px, rgb(204, 48, 46) 1.75517px 0.958851px 0px, rgb(204, 48, 46) 1.0806px 1.68294px 0px, rgb(204, 48, 46) 0.141474px 1.99499px 0px, rgb(204, 48, 46) -0.832294px 1.81859px 0px, rgb(204, 48, 46) -1.60229px 1.19694px 0px, rgb(204, 48, 46) -1.97998px 0.28224px 0px, rgb(204, 48, 46) -1.87291px -0.701566px 0px, rgb(204, 48, 46) -1.30729px -1.5136px 0px, rgb(204, 48, 46) -0.421592px -1.95506px 0px, rgb(204, 48, 46) 0.567324px -1.91785px 0px, rgb(204, 48, 46) 1.41734px -1.41108px 0px, rgb(204, 48, 46) 1.92034px -0.558831px 0px;
-	position: relative;
-	z-index: 1;
-}
-
-.peek-credit-subtitle {
-	font-size: 12px;
-	background: rgba(204, 48, 46, 0.4);
-	padding: 3px 5px;
-	border-radius: 5px;
-	position: relative;
-	z-index: 0;
-	top: -8px;
-	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-}
-
-.peek-credit-subtitle a:hover {
-	text-decoration: underline;
-}
-
-.peek-settings-option {
-	background: var(--ds-color-purple-100);
-	padding: 6px 10px;
-	border-radius: 5px;
-	font-size: 12px;
-	cursor: pointer;
-	opacity: 0.75;
-	transition: opacity 0.2s;
-	pointer-events: auto;
-}
-
-.peek-settings-option:hover {
-	opacity: 1;
-}
-
-#peek-map-list h3 {
-	margin-bottom: 10px;
-}
-
-#peek-map-list .tag-input {
-	display: block;
-	width: 100%;
-	font: inherit;
-	border: 1px solid #ccc;
-}
-
-#peek-map-list .maps {
-	max-height: 200px;
-	overflow-x: hidden;
-	overflow-y: auto;
-	font-size: 15px;
-}
-
-#peek-map-list .map {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	gap: 20px;
-	padding: 8px;
-	transition: background 0.2s;
-}
-
-#peek-map-list .map:nth-child(2n) {
-	background: #f0f0f0;
-}
-
-#peek-map-list .map-buttons:not(.is-added) .map-added {
-	display: none !important;
-}
-
-#peek-map-list .map-buttons.is-added .map-add {
-	display: none !important;
-}
-
-#peek-map-list .map-add {
-	background: green;
-	color: #fff;
-	padding: 3px 6px;
-	border-radius: 5px;
-	font-size: 13px;
-	font-weight: bold;
-	cursor: pointer;
-}
-
-#peek-map-list .map-added {
-	background: #000;
-	color: #fff;
-	padding: 3px 6px;
-	border-radius: 5px;
-	font-size: 13px;
-	font-weight: bold;
-}
-
-#pano-select {
-	width: 200px;
-	height: 40px;
-	padding: 5px;
-	font-size: 14px;
-	color: #FFFFFF;
-	position: absolute;
-	bottom: 4px !important;
-	border-radius: 5px;
-	box-shadow: rgba(0, 0, 0, 0.3) 0px 1px 4px -1px;
-	border: none;
-	cursor: pointer;
-	text-align: left;
-	z-index: 10007;
-	background-color: rgb(34, 34, 34, 0.9);
-}
-
-.map-name {
-	color: #007b8b;
-	text-decoration: underline;
-}
-
-.tag-buttons {
-	margin-top: 10px;
-}
-
-.tag-button {
-	margin: 5px 5px 0 0;
-	padding: 4px 10px;
-	border: 1px solid #ccc;
-	background: #f0f0f0;
-	border-radius: 4px;
-	cursor: pointer;
-	transition: 0.2s;
-	font-size: 16px;
-	font-weight: bold;
-}
-
-.tag-button:hover {
-	background: #e0e0e0;
-}
-
-.tag-button.active {
-	background-color: green;
-	color: white;
-	border-color: green;
-}
-
-[data-pano="true"]:hover .peek-tooltip,
-[data-pano="false"]:hover .peek-tooltip {
-	display: block;
-}
-
-[data-qa='correct-location-marker']:hover .peek-answer-tooltip {
-	display: block;
-}
-
-[data-pano="true"]> :first-child {
-	cursor: pointer;
-	--border-color: #E91E63 !important;
-	--border-size-factor: 1.8 !important;
-}
-
-[data-pano="false"]> :first-child {
-	cursor: initial;
-	--border-color: #323232 !important;
-	--border-size-factor: 1.5 !important;
-}
-
-[data-qa='guess-marker'] {
-	cursor: pointer !important;
-	z-index: 1000 !important;
-	transition: transform 0.2s;
-}
-
-.peek-header {
-	background: #111;
-	padding: 6px;
-	font-size: 11px;
-	color: #888;
-	text-align: center;
-	border-bottom: 1px solid #333;
-}
-
-.peek-dist {
-	color: #ffd700;
-	font-weight: bold;
-	font-size: 13px;
-}
-
-.peek-note {
-	font-size: 10px;
-	color: #ffd700;
-	margin-top: 4px;
-}
-
-.peek-body {
-	height: 150px;
-	background: #000;
-	overflow: hidden;
-}
-
-.peek-thumb {
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-}
-
-.peek-error {
-	padding: 15px;
-	color: #ff4d4d;
-	font-size: 12px;
-	text-align: center;
-}
-
-.peek-duel-rounds-button {
-	position: absolute;
-	top: 10px;
-	left: 10px;
-	z-index: 10005;
-	width: 44px;
-	height: 44px;
-	background: rgba(34, 34, 34, 0.9);
-	border: none;
-	border-radius: 6px;
-	cursor: pointer;
-	color: #ffffff;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	box-shadow: rgba(0, 0, 0, 0.3) 0px 2px 6px;
-	transition: all 0.2s;
-}
-
-.peek-duel-rounds-button:hover {
-	background: rgba(50, 50, 50, 0.95);
-	transform: scale(1.05);
-}
-
-.peek-duel-rounds-button.active {
-	background: rgba(66, 133, 244, 0.9);
-}
-
-.peek-duel-rounds-panel {
-	position: absolute;
-	top: 0;
-	left: -400px;
-	width: 400px;
-	height: 100%;
-	background: rgba(28, 28, 30, 0.98);
-	backdrop-filter: blur(10px);
-	z-index: 10004;
-	transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-	box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
-	display: flex;
-	flex-direction: column;
-}
-
-.peek-duel-rounds-panel.active {
-	left: 0;
-}
-
-.peek-duel-rounds-content {
-	flex: 1;
-	overflow-y: auto;
-	overflow-x: hidden;
-	padding: 15px;
-	padding-top: 50px;
-}
-
-.peek-duel-rounds-list {
-	transform: scale(0.85);
-	transform-origin: top left;
-	width: 117.65%;
-}
-
-.peek-duel-rounds-content [class*="game-summary_playedRoundsHeader"],
-.peek-duel-rounds-content [class*="game-summary_playedRounds"] {
-	background: transparent;
-}
-
-.peek-duel-rounds-content [class*="game-summary_playedRound"] {
-	background: rgba(255, 255, 255, 0.05);
-	border-radius: 6px;
-	margin-bottom: 8px;
-	transition: background 0.2s;
-	cursor: pointer;
-	font-size: 0.75em;
-}
-
-.peek-duel-rounds-content [class*="game-summary_playedRound"]:hover {
-	background: rgba(255, 255, 255, 0.08);
-}
-
-.peek-duel-rounds-content [class*="game-summary_selectedRound"] {
-	background: rgba(66, 133, 244, 0.3) !important;
-	border-left: 3px solid rgba(66, 133, 244, 0.9);
-}
-
-.peek-duel-rounds-close {
-	position: absolute;
-	top: 15px;
-	right: 20px;
-	width: 28px;
-	height: 28px;
-	background: rgba(255, 255, 255, 0.1);
-	border: none;
-	border-radius: 50%;
-	color: #ffffff;
-	font-size: 20px;
-	line-height: 1;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	transition: all 0.2s;
-	z-index: 10;
-}
-
-.peek-duel-rounds-close:hover {
-	background: rgba(255, 255, 255, 0.2);
-	transform: rotate(90deg);
-}
-
-@media (max-width: 768px) {
-	.peek-duel-rounds-panel {
-		width: 100%;
-		left: -100%;
-	}
-
-	.peek-duel-rounds-panel.active {
-		left: 0;
-	}
-}
-`)
-}
 
 
 main();
